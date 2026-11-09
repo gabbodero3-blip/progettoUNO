@@ -34,8 +34,18 @@ BASE = "https://booking.roadsurfer.com/api"
 RALLY_PAGE = "https://booking.roadsurfer.com/{lang}/rally/?currency=EUR"
 USER_AGENT = "Mozilla/5.0 (rally-finder)"
 
+try:  # usa i certificati di certifi se installato (risolve errori SSL su alcuni Mac)
+    import certifi
+    import ssl
+    SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+except ImportError:
+    SSL_CONTEXT = None
+
 
 # --------------------------------------------------------------------------- API
+
+ERRORS: list[str] = []
+
 
 def api_get(path: str, alias: str, retries: int = 3):
     """GET su /api/<path>. Il server richiede l'header X-Requested-Alias."""
@@ -49,16 +59,33 @@ def api_get(path: str, alias: str, retries: int = 3):
     )
     for attempt in range(retries):
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=30, context=SSL_CONTEXT) as resp:
                 return json.load(resp)
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-            if isinstance(exc, urllib.error.HTTPError) and exc.code == 404:
-                return None
+        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
             if attempt == retries - 1:
-                print(f"  ! errore su {path}: {exc}", file=sys.stderr)
+                ERRORS.append(f"{path}: {exc}")
                 return None
             time.sleep(2 ** attempt)
     return None
+
+
+def explain_errors() -> None:
+    """Stampa gli errori di rete in modo comprensibile."""
+    if not ERRORS:
+        return
+    print(f"\n!! {len(ERRORS)} richieste al sito sono fallite. Primo errore:", file=sys.stderr)
+    print(f"   {ERRORS[0]}", file=sys.stderr)
+    text = " ".join(ERRORS).upper()
+    if "CERTIFICATE_VERIFY_FAILED" in text or "SSL" in text:
+        print("   -> Problema di certificati SSL di Python.", file=sys.stderr)
+        print("      Su Mac: apri la cartella Applicazioni > Python 3.x e fai doppio clic su", file=sys.stderr)
+        print("      'Install Certificates.command', poi rilancia lo script.", file=sys.stderr)
+        print("      In alternativa: python3 -m pip install certifi", file=sys.stderr)
+    elif "403" in text or "429" in text:
+        print("   -> Il sito ha rifiutato le richieste (forse troppe insieme).", file=sys.stderr)
+        print("      Riprova tra qualche minuto, magari con --thread 2.", file=sys.stderr)
+    else:
+        print("   -> Controlla la connessione (VPN, proxy, firewall aziendale) e riprova.", file=sys.stderr)
 
 
 @dataclass
@@ -117,6 +144,9 @@ def find_offers(args) -> tuple[list[Offer], int]:
     lang = args.lingua
     print("Scarico l'elenco delle stazioni...", file=sys.stderr)
     raw_stations = api_get(f"{lang}/rally/stations", "rally.startStations") or []
+    if not raw_stations:
+        print("Impossibile scaricare l'elenco delle stazioni dal sito.", file=sys.stderr)
+        return [], 0
     stations = {s["id"]: to_station(s) for s in raw_stations}
     starts = [
         stations[s["id"]]
@@ -311,7 +341,13 @@ def parse_args(argv=None):
 def main(argv=None) -> int:
     args = parse_args(argv)
     offers, n_pairs = find_offers(args)
+    explain_errors()
+    if ERRORS and not offers:
+        print("\nRicerca non riuscita: i risultati non sono affidabili (vedi errore sopra).")
+        return 1
     print_table(offers, args)
+    if ERRORS:
+        print("\nAttenzione: alcune tratte non sono state controllate (vedi errore sopra).")
     if args.html:
         write_html(offers, args, args.html)
         print(f"\nPagina HTML salvata in {args.html}", file=sys.stderr)
