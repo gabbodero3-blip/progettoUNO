@@ -40,7 +40,7 @@ Opzioni principali:
 Ogni riga è una finestra in cui il camper è disponibile per quella tratta
 ("Dal" = primo giorno di ritiro, "Al" = ultimo giorno di riconsegna), proprio come
 appare nel calendario del sito. La prenotazione si fa poi sul sito Roadsurfer.
-L'elenco completo richiede circa 30 secondi.
+L'elenco completo richiede 1-2 minuti: lo script distanzia le richieste per non essere bloccato dal sito (errore 429). Se il blocco capita comunque, usa `--pausa 1 --thread 2`.
 
 ## Uso dal telefono (GitHub Actions)
 

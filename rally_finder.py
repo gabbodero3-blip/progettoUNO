@@ -23,6 +23,7 @@ import argparse
 import html
 import json
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -46,8 +47,31 @@ except ImportError:
 
 ERRORS: list[str] = []
 
+# Il sito limita le richieste (errore 429): le distanziamo e, se arriva un 429,
+# tutti i thread si fermano per un po' prima di riprovare.
+_lock = threading.Lock()
+_next_slot = 0.0
+MIN_INTERVAL = 0.25  # secondi minimi tra due richieste (modificabile con --pausa)
 
-def api_get(path: str, alias: str, retries: int = 3):
+
+def _wait_turn() -> None:
+    global _next_slot
+    with _lock:
+        now = time.monotonic()
+        wait = _next_slot - now
+        _next_slot = max(now, _next_slot) + MIN_INTERVAL
+    if wait > 0:
+        time.sleep(wait)
+
+
+def _back_off(seconds: float) -> None:
+    """Rallenta tutte le richieste per `seconds` secondi."""
+    global _next_slot
+    with _lock:
+        _next_slot = max(_next_slot, time.monotonic() + seconds)
+
+
+def api_get(path: str, alias: str, retries: int = 6):
     """GET su /api/<path>. Il server richiede l'header X-Requested-Alias."""
     req = urllib.request.Request(
         f"{BASE}/{path}",
@@ -58,6 +82,7 @@ def api_get(path: str, alias: str, retries: int = 3):
         },
     )
     for attempt in range(retries):
+        _wait_turn()
         try:
             with urllib.request.urlopen(req, timeout=30, context=SSL_CONTEXT) as resp:
                 return json.load(resp)
@@ -65,7 +90,15 @@ def api_get(path: str, alias: str, retries: int = 3):
             if attempt == retries - 1:
                 ERRORS.append(f"{path}: {exc}")
                 return None
-            time.sleep(2 ** attempt)
+            delay = min(5 * 2 ** attempt, 60)  # 5, 10, 20, 40, 60 s
+            if isinstance(exc, urllib.error.HTTPError) and exc.code in (429, 503):
+                retry_after = exc.headers.get("Retry-After", "")
+                if retry_after.isdigit():
+                    delay = max(delay, int(retry_after))
+                print(f"  ... il sito chiede di rallentare, attendo {delay}s", file=sys.stderr)
+                _back_off(delay)
+            else:
+                time.sleep(delay)
     return None
 
 
@@ -83,7 +116,7 @@ def explain_errors() -> None:
         print("      In alternativa: python3 -m pip install certifi", file=sys.stderr)
     elif "403" in text or "429" in text:
         print("   -> Il sito ha rifiutato le richieste (forse troppe insieme).", file=sys.stderr)
-        print("      Riprova tra qualche minuto, magari con --thread 2.", file=sys.stderr)
+        print("      Riprova tra qualche minuto, magari con --pausa 1 --thread 2.", file=sys.stderr)
     else:
         print("   -> Controlla la connessione (VPN, proxy, firewall aziendale) e riprova.", file=sys.stderr)
 
@@ -329,7 +362,9 @@ def parse_args(argv=None):
     p.add_argument("--markdown", metavar="FILE", help="aggiunge i risultati in Markdown a FILE")
     p.add_argument("--json", metavar="FILE", help="salva i risultati in JSON")
     p.add_argument("--lingua", default="it", help="lingua dei nomi delle stazioni (default it)")
-    p.add_argument("--thread", type=int, default=8, help="richieste in parallelo (default 8)")
+    p.add_argument("--thread", type=int, default=3, help="richieste in parallelo (default 3)")
+    p.add_argument("--pausa", type=float, default=0.25,
+                   help="secondi minimi tra una richiesta e l'altra (default 0.25; aumenta se ricevi errori 429)")
     args = p.parse_args(argv)
     if args.al is None:
         args.al = args.dal + timedelta(days=60)
@@ -340,6 +375,8 @@ def parse_args(argv=None):
 
 def main(argv=None) -> int:
     args = parse_args(argv)
+    global MIN_INTERVAL
+    MIN_INTERVAL = max(0.0, args.pausa)
     offers, n_pairs = find_offers(args)
     explain_errors()
     if ERRORS and not offers:
