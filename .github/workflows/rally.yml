@@ -1,0 +1,51 @@
+name: Cerca tratte Roadsurfer Rally
+
+on:
+  workflow_dispatch:
+    inputs:
+      dal:
+        description: "Inizio periodo (AAAA-MM-GG, vuoto = oggi)"
+        required: false
+      al:
+        description: "Fine periodo (AAAA-MM-GG, vuoto = dal + 60 giorni)"
+        required: false
+      da:
+        description: "Partenza: città separate da virgola (es. Milano,Torino) – vuoto = tutte"
+        required: false
+      a:
+        description: "Arrivo: città separate da virgola – vuoto = tutte"
+        required: false
+      min_notti:
+        description: "Minimo notti dentro il periodo"
+        required: false
+        default: "1"
+
+jobs:
+  cerca:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cerca tratte
+        env:
+          DAL: ${{ inputs.dal }}
+          AL: ${{ inputs.al }}
+          DA: ${{ inputs.da }}
+          A: ${{ inputs.a }}
+          MIN_NOTTI: ${{ inputs.min_notti }}
+        run: |
+          args=(--html risultati.html --markdown "$GITHUB_STEP_SUMMARY" --json risultati.json)
+          [ -n "$DAL" ] && args+=(--dal "$DAL")
+          [ -n "$AL" ] && args+=(--al "$AL")
+          [ -n "$MIN_NOTTI" ] && args+=(--min-notti "$MIN_NOTTI")
+          IFS=',' read -ra L <<< "$DA"; for c in "${L[@]}"; do c="$(echo "$c" | xargs)"; [ -n "$c" ] && args+=(--da "$c"); done
+          IFS=',' read -ra L <<< "$A";  for c in "${L[@]}"; do c="$(echo "$c" | xargs)"; [ -n "$c" ] && args+=(--a "$c"); done
+          python3 rally_finder.py "${args[@]}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: risultati-rally
+          path: |
+            risultati.html
+            risultati.json
