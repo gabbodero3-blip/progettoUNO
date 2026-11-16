@@ -9,7 +9,7 @@ Lo script interroga la stessa API usata dalla pagina del Rally:
 2. per ogni partenza, le stazioni di arrivo possibili;
 3. per ogni tratta, le finestre di date disponibili;
 
-e mostra solo quelle che cadono nel periodo che scegli.
+e mostra solo quelle che cadono nel periodo che scegli, divise per **paese di partenza**.
 
 ## Uso dal computer
 
@@ -35,7 +35,8 @@ Opzioni principali:
 | `--paese-partenza`, `--paese-arrivo` | filtro per codice paese (IT, DE, ES, FR, ...) |
 | `--min-notti N` | almeno N notti della finestra devono cadere nel periodo |
 | `--ritiro-nel-periodo` | solo finestre che **iniziano** dentro il periodo |
-| `--html`, `--json`, `--markdown` | salva i risultati su file |
+| `--html`, `--json`, `--markdown` | salva i risultati su file (l'HTML è una pagina per telefono con filtri per date) |
+| `--sito CARTELLA` | crea `CARTELLA/index.html` con tutte le tratte pubblicate |
 
 Ogni riga è una finestra in cui il camper è disponibile per quella tratta
 ("Dal" = primo giorno di ritiro, "Al" = ultimo giorno di riconsegna), proprio come
