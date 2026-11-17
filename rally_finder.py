@@ -9,6 +9,9 @@ periodo, senza dover selezionare a mano ogni coppia partenza/arrivo sul sito.
 Usa la stessa API pubblica che usa la pagina https://booking.roadsurfer.com/it/rally/
 
 Esempi:
+    python3 rally_finder.py 31/12/2026
+        -> tutte le tratte che includono la notte 31/12 -> 01/01, con periodo e modello del mezzo
+    python3 rally_finder.py 31/12/2026 --da Monaco
     python3 rally_finder.py --dal 2026-12-01 --al 2026-12-20
     python3 rally_finder.py --dal 2026-12-01 --al 2026-12-20 --da Milano --da Monaco
     python3 rally_finder.py --dal 2026-12-01 --al 2026-12-31 --a Barcellona --min-notti 5
@@ -26,9 +29,10 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 
 BASE = "https://booking.roadsurfer.com/api"
@@ -146,6 +150,7 @@ class Offer:
     window_to: date
     usable_from: date
     usable_to: date
+    vehicles: list = field(default_factory=list)  # [(modello, marca, prezzo)]
 
     @property
     def window_nights(self) -> int:
@@ -239,6 +244,83 @@ def find_offers(args) -> tuple[list[Offer], int]:
     return offers, len(pairs)
 
 
+def fetch_vehicles(offers: list[Offer], args) -> None:
+    """Per ogni finestra chiede al sito i mezzi disponibili (modello e prezzo)."""
+    if not offers:
+        return
+    print(f"Recupero modello e prezzo di {len(offers)} disponibilita'...", file=sys.stderr)
+
+    def lookup(o: Offer):
+        params = urllib.parse.urlencode({
+            "stations": json.dumps([[o.start.id, o.end.id]]),
+            "range": json.dumps([o.window_from.isoformat(), o.window_to.isoformat()]),
+            "currency": "EUR",
+        })
+        data = api_get(f"{args.lingua}/rally/search?{params}", "rally.search") or []
+        found = []
+        for item in data if isinstance(data, list) else []:
+            if not item.get("available") or not item.get("model"):
+                continue
+            model = item["model"]
+            price = ((item.get("availability") or {}).get("price_details") or {}).get("final")
+            found.append((model.get("name") or item.get("name") or "?", model.get("subname") or "", price))
+        o.vehicles = found
+
+    with ThreadPoolExecutor(max_workers=args.thread) as pool:
+        list(pool.map(lookup, offers))
+
+
+def parse_night(text: str) -> date:
+    """Accetta '31/12/2026', '2026-12-31' o '31/12/2026 -> 01/01/2027' (conta la prima data)."""
+    first = text.replace("->", " ").replace(">", " ").split()[0]
+    for f in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%d.%m.%Y"):
+        try:
+            return datetime.strptime(first, f).date()
+        except ValueError:
+            pass
+    raise argparse.ArgumentTypeError(f"data non valida: {text!r} (usa ad es. 31/12/2026)")
+
+
+def vehicle_text(o: Offer) -> str:
+    if not o.vehicles:
+        return "non disponibile/n.d."
+    parts = []
+    for name, brand, price in o.vehicles:
+        t = f"{name} ({brand})" if brand else name
+        if price is not None:
+            t += f" - {price:.0f} EUR"
+        parts.append(t)
+    return "; ".join(parts)
+
+
+def print_night(offers: list[Offer], night: date) -> None:
+    """Risultato per una notte: periodo possibile e modello, divisi per paese di partenza."""
+    nxt = night + timedelta(days=1)
+    title = f"notte {night.strftime('%d/%m/%Y')} -> {nxt.strftime('%d/%m/%Y')}"
+    if not offers:
+        print(f"\nNessuna tratta disponibile per la {title}.")
+        return
+    print(f"\n{len(offers)} tratte disponibili per la {title}, per paese di partenza.")
+    print("Periodo = ritiro dal primo giorno, riconsegna entro l'ultimo (la notte richiesta e' sempre inclusa).")
+    head = ("Partenza", "Arrivo", "Periodo possibile", "Notti", "Mezzo (prezzo noleggio)")
+    rows_all = []
+    for country, items in by_country(offers):
+        rows_all.append((country, [
+            (o.start.name, o.end.label,
+             f"{fmt(o.window_from)} -> {fmt(o.window_to)}",
+             str(o.window_nights), vehicle_text(o))
+            for o in items
+        ]))
+    widths = [max(len(r[i]) for _, rows in rows_all for r in rows + [head]) for i in range(len(head))]
+    line = lambda r: "  ".join(c.ljust(widths[j]) for j, c in enumerate(r)).rstrip()
+    for country, rows in rows_all:
+        print(f"\n=== {country.upper()} - {len(rows)} ===")
+        print(line(head))
+        print("  ".join("-" * w for w in widths))
+        for r in rows:
+            print(line(r))
+
+
 # ------------------------------------------------------------------------ output
 
 WEEKDAYS = ["lun", "mar", "mer", "gio", "ven", "sab", "dom"]
@@ -262,8 +344,11 @@ def print_table(offers: list[Offer], args) -> None:
         print(f"\nNessuna tratta disponibile tra il {fmt(args.dal)} e il {fmt(args.al)}.")
         return
     print(f"\n{len(offers)} disponibilita' tra il {fmt(args.dal)} e il {fmt(args.al)}, per paese di partenza:")
-    head = ("Partenza", "Arrivo", "Dal", "Al", "Notti")
-    rows = [(o.start.name, o.end.label, fmt(o.window_from), fmt(o.window_to), str(o.window_nights)) for o in offers]
+    with_models = bool(args.modelli)
+    head = ("Partenza", "Arrivo", "Dal", "Al", "Notti") + (("Mezzo (prezzo noleggio)",) if with_models else ())
+    row = lambda o: (o.start.name, o.end.label, fmt(o.window_from), fmt(o.window_to), str(o.window_nights)) + (
+        (vehicle_text(o),) if with_models else ())
+    rows = [row(o) for o in offers]
     widths = [max(len(r[i]) for r in rows + [head]) for i in range(len(head))]
     line = lambda r: "  ".join(c.ljust(widths[j]) for j, c in enumerate(r)).rstrip()
     for country, items in by_country(offers):
@@ -271,7 +356,7 @@ def print_table(offers: list[Offer], args) -> None:
         print(line(head))
         print("  ".join("-" * w for w in widths))
         for o in items:
-            print(line((o.start.name, o.end.label, fmt(o.window_from), fmt(o.window_to), str(o.window_nights))))
+            print(line(row(o)))
 
 
 def write_markdown(offers: list[Offer], args, path: str) -> None:
@@ -471,6 +556,11 @@ def parse_args(argv=None):
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__.split("Esempi:")[1] if "Esempi:" in __doc__ else None,
     )
+    p.add_argument("notte", nargs="?", type=parse_night, metavar="NOTTE",
+                   help="una notte che ti interessa, es. 31/12/2026: mostra tutte le tratte che la includono, "
+                        "il periodo possibile e il modello del mezzo")
+    p.add_argument("--modelli", action="store_true",
+                   help="per le ricerche per periodo, recupera anche modello e prezzo (piu' lento)")
     p.add_argument("--dal", type=date.fromisoformat, default=today,
                    help="inizio periodo AAAA-MM-GG (default: oggi)")
     p.add_argument("--al", type=date.fromisoformat, default=None,
@@ -497,6 +587,10 @@ def parse_args(argv=None):
     p.add_argument("--pausa", type=float, default=0.25,
                    help="secondi minimi tra una richiesta e l'altra (default 0.25; aumenta se ricevi errori 429)")
     args = p.parse_args(argv)
+    if args.notte:
+        # una tratta include la notte se il ritiro e' entro quel giorno e la riconsegna dal giorno dopo
+        args.dal, args.al = args.notte, args.notte + timedelta(days=1)
+        args.min_notti, args.ritiro_nel_periodo = 1, False
     if args.al is None:
         args.al = args.dal + timedelta(days=730 if args.sito else 60)
     if args.al < args.dal:
@@ -509,6 +603,8 @@ def main(argv=None) -> int:
     global MIN_INTERVAL
     MIN_INTERVAL = max(0.0, args.pausa)
     offers, n_pairs = find_offers(args)
+    if args.notte or args.modelli:
+        fetch_vehicles(offers, args)
     explain_errors()
     if ERRORS and not offers:
         print("\nRicerca non riuscita: i risultati non sono affidabili (vedi errore sopra).")
@@ -521,7 +617,10 @@ def main(argv=None) -> int:
         write_html(offers, args, os.path.join(args.sito, "index.html"), preset_period=False)
         print(f"\nSito creato in {args.sito}/index.html con {len(offers)} disponibilita'.")
         return 0
-    print_table(offers, args)
+    if args.notte:
+        print_night(offers, args.notte)
+    else:
+        print_table(offers, args)
     if ERRORS:
         print("\nAttenzione: alcune tratte non sono state controllate (vedi errore sopra).")
     if args.html:

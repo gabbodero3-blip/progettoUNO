@@ -16,6 +16,13 @@ e mostra solo quelle che cadono nel periodo che scegli, divise per **paese di pa
 Serve solo Python 3.8+ (nessuna libreria da installare).
 
 ```bash
+# UNA NOTTE: tutte le tratte che includono la notte 31/12 -> 01/01,
+# con il periodo che puoi fare e il modello del mezzo (con prezzo del noleggio)
+python3 rally_finder.py 31/12/2026
+
+# stessa cosa, solo partenze da Monaco
+python3 rally_finder.py 31/12/2026 --da Monaco
+
 # tutte le tratte tra il 1 e il 20 dicembre
 python3 rally_finder.py --dal 2026-12-01 --al 2026-12-20
 
@@ -30,6 +37,8 @@ Opzioni principali:
 
 | Opzione | Significato |
 |---|---|
+| `NOTTE` (es. `31/12/2026`) | mostra le tratte che includono quella notte, con periodo possibile e modello |
+| `--modelli` | nelle ricerche per periodo aggiunge modello e prezzo (più lento) |
 | `--dal`, `--al` | periodo (AAAA-MM-GG). Default: da oggi a +60 giorni |
 | `--da`, `--a` | filtro città di partenza / arrivo (anche parte del nome, ripetibile) |
 | `--paese-partenza`, `--paese-arrivo` | filtro per codice paese (IT, DE, ES, FR, ...) |
